@@ -1,49 +1,164 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sqlalchemy import create_engine
 import os
 
-DATABASE_URL = 'postgresql://filmes_o78y_user:8Dn3409RciyqTob6w5tndAJPkyc6jBLp@dpg-d8ktig647okc73b7uq20-a.virginia-postgres.render.com/filmes_o78y'
+# --- INICIALIZAÇÃO DO FASTAPI ---
+app = FastAPI(title="API de Recomendação de Filmes")
 
-# A Render exige que a URL comece exatamente com 'postgresql://'
+# --- BLOCO CORS CONFIGURADO ---
+origins = [
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+    "http://127.0.0.1:8000", 
+    "http://localhost:8000",
+    "*" 
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,        
+    allow_methods=["*"],           
+    allow_headers=["*"],           
+)
+# -----------------------------------
+
+# --- CONEXÃO COM O BANCO DE DADOS RELACIONAL ---
+DATABASE_URL = "postgresql://filmes_o78y_user:8Dn3409RciyqTob6w5tndAJPkyc6jBLp@dpg-d8ktig647okc73b7uq20-a.virginia-postgres.render.com/filmes_o78y"
+
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-print("🔌 Conectando ao banco de dados na nuvem...")
 engine = create_engine(DATABASE_URL)
+# -----------------------------------------------
 
-# Lista dos seus arquivos CSV e os nomes que as tabelas terão no banco
-arquivos_csv = {
-    "Filmes.csv": "filmes",
-    "Ratings.csv": "ratings",
-    "Dados.csv": "dados",
-    "Tags.csv": "tags"
+dados_globais = {
+    "sim_colaborativo": None,
+    "sim_conteudo": None
 }
 
-print(" Iniciando a migração dos dados. Isso pode levar alguns minutos dependendo do tamanho...")
-
-for arquivo, nome_tabela in arquivos_csv.items():
-    if os.path.exists(arquivo):
-        print(f"📦 Lendo {arquivo}...")
+def carregar_dados():
+    """
+    Função executada ao iniciar a API para ler do PostgreSQL na nuvem e treinar modelos.
+    """
+    print("🔌 Conectando ao banco de dados e carregando dados... Isso pode levar alguns segundos.")
+    
+    try:
+        # =========================================================
+        # 1. CARREGAMENTO DOS DADOS VIA SQL
+        # =========================================================
+        filmes = pd.read_sql("SELECT * FROM filmes", engine)
+        dados_conteudo = pd.read_sql("SELECT * FROM dados", engine)
+        tags = pd.read_sql("SELECT * FROM tags", engine)
+        ratings = pd.read_sql("SELECT * FROM ratings LIMIT 80000", engine)
         
-        # O truque mágico: se o arquivo for o Ratings (que é gigante), 
-        # lemos em pedaços (chunks) para não estourar a memória do seu PC e do banco
-        if arquivo == "Ratings.csv":
-            chunksize = 50000
-            primeira_vez = True
-            for chunk in pd.read_csv(arquivo, chunksize=chunksize):
-                if primeira_vez:
-                    chunk.to_sql(nome_tabela, engine, if_exists='replace', index=False)
-                    primeira_vez = False
-                else:
-                    chunk.to_sql(nome_tabela, engine, if_exists='append', index=False)
-                print(f"   -> Enviando bloco de {chunksize} linhas para a tabela '{nome_tabela}'...")
-        else:
-            # Arquivos menores lêem de uma vez só
-            df = pd.read_csv(arquivo)
-            df.to_sql(nome_tabela, engine, if_exists='replace', index=False)
-            print(f"   ✔️ Tabela '{nome_tabela}' criada e populada com sucesso!")
-            
-    else:
-        print(f"⚠️ Arquivo {arquivo} não foi encontrado na pasta atual.")
+        # 🔍 PRINTS DE DIAGNÓSTICO: Mostra as colunas originais antes de qualquer conversão
+        print("🔍 COLUNAS ORIGINAIS - FILMES:", list(filmes.columns))
+        print("🔍 COLUNAS ORIGINAIS - RATINGS:", list(ratings.columns))
+        print("🔍 COLUNAS ORIGINAIS - TAGS:", list(tags.columns))
+        print("🔍 COLUNAS ORIGINAIS - DADOS:", list(dados_conteudo.columns))
+        
+        # Força colunas minúsculas para evitar problemas de case do Postgres
+        filmes.columns = filmes.columns.str.lower()
+        dados_conteudo.columns = dados_conteudo.columns.str.lower()
+        tags.columns = tags.columns.str.lower()
+        ratings.columns = ratings.columns.str.lower()
+        
+        # ==========================================
+        # 2. PREPARAÇÃO DO MÉTODO COLABORATIVO
+        # ==========================================
+        df_colab = filmes.merge(ratings, on='movieid')
+        tabela_filmes = pd.pivot_table(df_colab, index='title', columns='userid', values='rating').fillna(0)
+        
+        rec_colab = cosine_similarity(tabela_filmes)
+        rec_df_colab = pd.DataFrame(rec_colab, columns=tabela_filmes.index, index=tabela_filmes.index)
+        
+        dados_globais["sim_colaborativo"] = rec_df_colab
 
-print("\n MIGRACAO CONCLUÍDA COM SUCESSO! Seus dados estão na nuvem.")
+        # ==========================================
+        # 3. PREPARAÇÃO DO MÉTODO CONTENT-BASED
+        # ==========================================
+        filmes['movieid'] = filmes['movieid'].astype(str)
+        tags['movieid'] = tags['movieid'].astype(str)
+        
+        # Primeiro merge por 'movieid' para consolidar os IDs válidos
+        df2 = filmes.merge(tags, on='movieid', how='left')
+        
+        # Agora trazemos os dados extras cruzando 'title' com 'name'
+        df2 = df2.merge(dados_conteudo, left_on='title', right_on='name', how='left')
+        
+        df2 = df2.fillna('')
+        
+        # Feature Engineering com tratamento de colunas ausentes
+        genres_col = df2['genres'] if 'genres' in df2.columns else ''
+        cast_col = df2['directors_cast'] if 'directors_cast' in df2.columns else ''
+        desc_col = df2['discription'] if 'discription' in df2.columns else ''
+        tag_col = df2['tag'] if 'tag' in df2.columns else ''
+
+        df2['Infos'] = (
+            genres_col.astype(str) + " " + 
+            cast_col.astype(str) + " " + 
+            desc_col.astype(str) + " " + 
+            tag_col.astype(str)
+        )
+        
+        df_conteudo_unico = df2.drop_duplicates(subset=['title']).reset_index(drop=True)
+        
+        vec = TfidfVectorizer(stop_words='english')
+        tfidf = vec.fit_transform(df_conteudo_unico['Infos'])
+        
+        sim_cont = cosine_similarity(tfidf)
+        sim_df_cont = pd.DataFrame(sim_cont, columns=df_conteudo_unico['title'], index=df_conteudo_unico['title'])
+        
+        dados_globais["sim_conteudo"] = sim_df_cont
+        print("✔️ Todos os modelos de IA foram treinados e carregados com sucesso do banco de dados!")
+        
+    except Exception as e:
+        print(f"❌ Erro crítico ao carregar dados do banco: {str(e)}")
+
+@app.on_event("startup")
+async def startup_event():
+    carregar_dados()
+
+# ==========================================
+# ROTAS DA API
+# ==========================================
+
+@app.get("/")
+def home():
+    return {"mensagem": "API de Recomendação de Filmes Online funcionando via Banco de Dados PostgreSQL!"}
+
+@app.get("/recomendacao/colaborativa/{nome_filme}")
+def recomendar_colaborativo(nome_filme: str):
+    df_sim = dados_globais["sim_colaborativo"]
+    
+    if df_sim is None or nome_filme not in df_sim.index:
+        raise HTTPException(status_code=404, detail="Filme não encontrado na base colaborativa.")
+    
+    recomendacoes = df_sim[nome_filme].sort_values(ascending=False).iloc[1:11]
+    
+    return {
+        "filme_origem": nome_filme,
+        "metodo": "Colaborativo (User Ratings)",
+        "recomendacoes": recomendacoes.to_dict()
+    }
+
+@app.get("/recomendacao/conteudo/{nome_filme}")
+def recomendar_conteudo(nome_filme: str):
+    df_sim = dados_globais["sim_conteudo"]
+    
+    if df_sim is None or nome_filme not in df_sim.index:
+        raise HTTPException(status_code=404, detail="Filme não encontrado na base de conteúdo.")
+    
+    recomendacoes = df_sim[nome_filme].sort_values(ascending=False).iloc[1:11]
+    
+    return {
+        "filme_origem": nome_filme,
+        "metodo": "Content-Based (TF-IDF)",
+        "recomendacoes": recomendacoes.to_dict()
+    }
