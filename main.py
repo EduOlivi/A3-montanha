@@ -16,7 +16,7 @@ origins = [
     "http://localhost:5500",
     "http://127.0.0.1:8000", 
     "http://localhost:8000",
-    "*" # Permite que o seu front-end na Vercel ou qualquer outra origem aceda à API
+    "*" 
 ]
 
 app.add_middleware(
@@ -31,14 +31,12 @@ app.add_middleware(
 # --- CONEXÃO COM O BANCO DE DADOS RELACIONAL ---
 DATABASE_URL = "postgresql://filmes_o78y_user:8Dn3409RciyqTob6w5tndAJPkyc6jBLp@dpg-d8ktig647okc73b7uq20-a.virginia-postgres.render.com/filmes_o78y"
 
-# Ajuste obrigatório exigido pelo SQLAlchemy para links do Render
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 engine = create_engine(DATABASE_URL)
 # -----------------------------------------------
 
-# Variáveis globais para armazenar os modelos e dados na memória
 dados_globais = {
     "sim_colaborativo": None,
     "sim_conteudo": None
@@ -57,11 +55,9 @@ def carregar_dados():
         filmes = pd.read_sql("SELECT * FROM filmes", engine)
         dados_conteudo = pd.read_sql("SELECT * FROM dados", engine)
         tags = pd.read_sql("SELECT * FROM tags", engine)
-        
-        # Limitamos a leitura de ratings a 80.000 registos para respeitar o limite de RAM do servidor grátis
         ratings = pd.read_sql("SELECT * FROM ratings LIMIT 80000", engine)
         
-        # --- FORÇAR TODAS AS COLUNAS A FICAREM MINÚSCULAS (Garante compatibilidade com o Postgres) ---
+        # Força colunas minúsculas para evitar problemas de case do Postgres
         filmes.columns = filmes.columns.str.lower()
         dados_conteudo.columns = dados_conteudo.columns.str.lower()
         tags.columns = tags.columns.str.lower()
@@ -70,11 +66,9 @@ def carregar_dados():
         # ==========================================
         # 2. PREPARAÇÃO DO MÉTODO COLABORATIVO
         # ==========================================
-        # Alterado de 'movieId' para 'movieid'
         df_colab = filmes.merge(ratings, on='movieid')
         tabela_filmes = pd.pivot_table(df_colab, index='title', columns='userid', values='rating').fillna(0)
         
-        # Calculando similaridade 
         rec_colab = cosine_similarity(tabela_filmes)
         rec_df_colab = pd.DataFrame(rec_colab, columns=tabela_filmes.index, index=tabela_filmes.index)
         
@@ -83,23 +77,28 @@ def carregar_dados():
         # ==========================================
         # 3. PREPARAÇÃO DO MÉTODO CONTENT-BASED
         # ==========================================
-        # Alterado de 'movieId' para 'movieid'
         filmes['movieid'] = filmes['movieid'].astype(str)
         tags['movieid'] = tags['movieid'].astype(str)
         
-        # Merges (Ajustado 'Name' para 'name' e 'movieId' para 'movieid')
-        df2 = filmes.merge(dados_conteudo, left_on='title', right_on='name', how='left')
-        df2 = df2.merge(tags, left_on='movieid', right_on='movieid', how='left')
+        # 🔥 MUDANÇA ESTRATÉGICA AQUI: Primeiro mergeamos por 'movieid' para não perder a coluna!
+        df2 = filmes.merge(tags, on='movieid', how='left')
         
-        # Tratamento de Nulos
+        # Agora trazemos os dados extras cruzando 'title' com 'name'
+        df2 = df2.merge(dados_conteudo, left_on='title', right_on='name', how='left')
+        
         df2 = df2.fillna('')
         
-        # Feature Engineering (Sopa de palavras - Ajustado para colunas minúsculas)
+        # Feature Engineering (Garante que se alguma coluna faltar, o .get() não quebra o código)
+        genres_col = df2['genres'] if 'genres' in df2.columns else ''
+        cast_col = df2['directors_cast'] if 'directors_cast' in df2.columns else ''
+        desc_col = df2['discription'] if 'discription' in df2.columns else ''
+        tag_col = df2['tag'] if 'tag' in df2.columns else ''
+
         df2['Infos'] = (
-            df2['genres'] + " " + 
-            df2['directors_cast'].astype(str) + " " + 
-            df2['discription'].astype(str) + " " + 
-            df2['tag'].astype(str)
+            genres_col.astype(str) + " " + 
+            cast_col.astype(str) + " " + 
+            desc_col.astype(str) + " " + 
+            tag_col.astype(str)
         )
         
         df_conteudo_unico = df2.drop_duplicates(subset=['title']).reset_index(drop=True)
@@ -116,7 +115,6 @@ def carregar_dados():
     except Exception as e:
         print(f"❌ Erro crítico ao carregar dados do banco: {str(e)}")
 
-# Evento de inicialização do FastAPI
 @app.on_event("startup")
 async def startup_event():
     carregar_dados()
