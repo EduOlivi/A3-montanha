@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Recomendação de Filmes</title>
+    <!-- Carrega Tailwind CSS para estilização moderna e responsiva -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0d1117; /* Fundo escuro */
+        }
+        .card {
+            background-color: #161b22; /* Fundo do card */
+            border: 1px solid #30363d;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+        }
+        .header-icon {
+            color: #e30713; /* Cor vermelha de cinema/pipoca */
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+<div class="container mx-auto max-w-lg card rounded-xl p-8">
+    <h1 class="text-3xl font-bold text-white text-center mb-6 flex items-center justify-center">
+        <span class="header-icon text-4xl mr-3">🍿</span>
+        Sistema de Recomendação de Filmes
+    </h1>
+
+    <!-- Formulário de Entrada -->
+    <div class="space-y-4">
+        <div>
+            <label for="filmeNome" class="block text-sm font-medium text-gray-400 mb-1">Nome do Filme:</label>
+            <input type="text" id="filmeNome" value="Toy Story" placeholder="Ex: La La Land ou Toy Story"
+                   class="w-full p-3 bg-gray-700 text-white border border-gray-600 rounded-lg focus:ring-red-500 focus:border-red-500 transition duration-150 ease-in-out">
+        </div>
+
+        <div>
+            <label for="metodo" class="block text-sm font-medium text-gray-400 mb-1">Método de Recomendação:</label>
+            <select id="metodo"
+                    class="w-full p-3 bg-gray-700 text-white border border-gray-600 rounded-lg focus:ring-red-500 focus:border-red-500 transition duration-150 ease-in-out">
+                <option value="colaborativa">1. Colaborativa (Gosto de Usuários)</option>
+                <option value="conteudo">2. Content-Based (Características do Filme)</option>
+            </select>
+        </div>
+
+        <button onclick="buscarRecomendacoes()"
+                class="w-full py-3 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition duration-200 ease-in-out shadow-lg shadow-red-500/50 transform hover:scale-105">
+            Buscar Recomendações
+        </button>
+    </div>
+
+    <!-- Seção de Resultados -->
+    <div id="resultado" class="mt-8 p-4 bg-gray-800 border-l-4 border-red-600 rounded-lg text-gray-300">
+        <p>Aguardando busca. Clique em "Buscar Recomendações".</p>
+    </div>
+</div>
+
+<script>
+    // URL base da sua API rodando no Uvicorn (Porta 8000)
+    const API_URL = 'http://127.0.0.1:8000/recomendacao/';
+
+    async function buscarRecomendacoes() {
+        const filmeNome = document.getElementById('filmeNome').value.trim();
+        const metodo = document.getElementById('metodo').value;
+        const resultadoDiv = document.getElementById('resultado');
+        const originalHtml = resultadoDiv.innerHTML;
+
+        if (!filmeNome) {
+            resultadoDiv.className = "mt-8 p-4 bg-red-900 border-l-4 border-red-500 rounded-lg text-white";
+            resultadoDiv.innerHTML = '<p class="font-bold">⚠️ Erro: Por favor, digite o nome de um filme.</p>';
+            return;
+        }
+
+        // Codifica o nome para URL (importante para filmes com espaço)
+        const nomeCodificado = encodeURIComponent(filmeNome);
+        const urlCompleta = `${API_URL}${metodo}/${nomeCodificado}`;
+        
+        // Indicador de Carregamento
+        resultadoDiv.className = "mt-8 p-4 bg-blue-900 border-l-4 border-blue-500 rounded-lg text-white animate-pulse";
+        resultadoDiv.innerHTML = '<p>Buscando recomendações... 🔄</p>';
+        
+        try {
+            const response = await fetch(urlCompleta);
+
+            if (!response.ok) {
+                // Tenta ler a mensagem de erro da API
+                let errorMessage = `Erro HTTP: ${response.status}. Verifique o terminal Uvicorn.`;
+                try {
+                    const erroData = await response.json();
+                    errorMessage = erroData.detail || errorMessage;
+                } catch {} // Ignora se o corpo da resposta não for JSON
+                
+                throw new Error(errorMessage);
+            }
+
+            const data = await response.json();
+            exibirResultado(data);
+
+        } catch (error) {
+            // Trata erros de rede ou erros retornados pela API
+            resultadoDiv.className = "mt-8 p-4 bg-red-900 border-l-4 border-red-500 rounded-lg text-white";
+            resultadoDiv.innerHTML = `<p class="font-bold">❌ Erro ao buscar:</p><p class="mt-1">${error.message}</p>`;
+        }
+    }
+
+    function exibirResultado(data) {
+        const resultadoDiv = document.getElementById('resultado');
+        resultadoDiv.className = "mt-8 p-4 bg-gray-800 border-l-4 border-green-500 rounded-lg text-gray-300";
+        
+        let htmlContent = `
+            <h2 class="text-xl font-semibold text-white mb-3">⭐ Resultados:</h2>
+            <p class="text-sm text-gray-400 mb-2">Para: <span class="text-red-400 font-medium">${data.filme_origem}</span> (Método: ${data.metodo.replace('(User Ratings)', 'U/R').replace('(TF-IDF)', 'Conteúdo')})</p>
+            
+            <div class="space-y-1">
+        `;
+
+        const recomendacoes = data.recomendacoes;
+        
+        // Converte e ordena as recomendações
+        const listaOrdenada = Object.entries(recomendacoes)
+            .sort(([, scoreA], [, scoreB]) => scoreB - scoreA);
+
+        listaOrdenada.forEach(([filme, score], index) => {
+            htmlContent += `
+                <div class="flex justify-between items-center p-2 bg-gray-700 rounded-md">
+                    <span class="text-sm text-gray-200">#${index + 1} ${filme}</span>
+                    <span class="font-bold text-sm text-green-400">${score.toFixed(4)}</span>
+                </div>
+            `;
+        });
+        
+        htmlContent += `</div>`;
+        resultadoDiv.innerHTML = htmlContent;
+    }
+</script>
+
+</body>
+</html>
