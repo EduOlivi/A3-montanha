@@ -61,11 +61,18 @@ def carregar_dados():
         # Limitamos a leitura de ratings a 80.000 registos para respeitar o limite de RAM do servidor grátis
         ratings = pd.read_sql("SELECT * FROM ratings LIMIT 80000", engine)
         
+        # --- FORÇAR TODAS AS COLUNAS A FICAREM MINÚSCULAS (Garante compatibilidade com o Postgres) ---
+        filmes.columns = filmes.columns.str.lower()
+        dados_conteudo.columns = dados_conteudo.columns.str.lower()
+        tags.columns = tags.columns.str.lower()
+        ratings.columns = ratings.columns.str.lower()
+        
         # ==========================================
         # 2. PREPARAÇÃO DO MÉTODO COLABORATIVO
         # ==========================================
-        df_colab = filmes.merge(ratings, on='movieId')
-        tabela_filmes = pd.pivot_table(df_colab, index='title', columns='userId', values='rating').fillna(0)
+        # Alterado de 'movieId' para 'movieid'
+        df_colab = filmes.merge(ratings, on='movieid')
+        tabela_filmes = pd.pivot_table(df_colab, index='title', columns='userid', values='rating').fillna(0)
         
         # Calculando similaridade 
         rec_colab = cosine_similarity(tabela_filmes)
@@ -76,21 +83,22 @@ def carregar_dados():
         # ==========================================
         # 3. PREPARAÇÃO DO MÉTODO CONTENT-BASED
         # ==========================================
-        filmes['movieId'] = filmes['movieId'].astype(str)
-        tags['movieId'] = tags['movieId'].astype(str)
+        # Alterado de 'movieId' para 'movieid'
+        filmes['movieid'] = filmes['movieid'].astype(str)
+        tags['movieid'] = tags['movieid'].astype(str)
         
-        # Merges
-        df2 = filmes.merge(dados_conteudo, left_on='title', right_on='Name', how='left')
-        df2 = df2.merge(tags, left_on='movieId', right_on='movieId', how='left')
+        # Merges (Ajustado 'Name' para 'name' e 'movieId' para 'movieid')
+        df2 = filmes.merge(dados_conteudo, left_on='title', right_on='name', how='left')
+        df2 = df2.merge(tags, left_on='movieid', right_on='movieid', how='left')
         
         # Tratamento de Nulos
         df2 = df2.fillna('')
         
-        # Feature Engineering (Sopa de palavras)
+        # Feature Engineering (Sopa de palavras - Ajustado para colunas minúsculas)
         df2['Infos'] = (
             df2['genres'] + " " + 
-            df2['Directors_Cast'].astype(str) + " " + 
-            df2['Discription'].astype(str) + " " + 
+            df2['directors_cast'].astype(str) + " " + 
+            df2['discription'].astype(str) + " " + 
             df2['tag'].astype(str)
         )
         
