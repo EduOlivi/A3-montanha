@@ -66,6 +66,8 @@ def carregar_dados():
         # ==========================================
         # 2. PREPARAÇÃO DO MÉTODO COLABORATIVO
         # ==========================================
+        print(f"📋 Colunas filmes: {list(filmes.columns)}")
+        print(f"📋 Colunas ratings: {list(ratings.columns)}")
         df_colab = filmes.merge(ratings, on='movieid')
         tabela_filmes = pd.pivot_table(df_colab, index='title', columns='userid', values='rating').fillna(0)
         
